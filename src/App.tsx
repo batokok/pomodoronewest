@@ -596,8 +596,8 @@ function FloatingMini({
     if (!drag.current.on) return;
     const width = 272,
       height = minimized ? 70 : 180,
-      vw = innerWidth,
-      vh = innerHeight;
+      vw = window.innerWidth,
+      vh = window.innerHeight;
     const nx = Math.max(
       8,
       Math.min(vw - width - 8, e.clientX - drag.current.dx)
