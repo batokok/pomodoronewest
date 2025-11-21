@@ -1,5 +1,11 @@
 // src/App.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Activity,
   BarChart3,
@@ -57,12 +63,10 @@ const LS = {
   bestStreak: "pomodoro_best_streak",
   notifications: "pomodoro_notifications",
   miniPos: "pomodoro_mini_pos",
+  chatPos: "pomodoro_chat_pos",
 };
 
 /* ========= HELPERS ========= */
-const delay = (ms: number): Promise<void> =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 const cleanText = (t: unknown): string =>
   String(t ?? "")
     .replace(/\*\*/g, "")
@@ -515,7 +519,9 @@ function MusicPanel({
                 src={`https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&rel=0&modestbranding=1`}
                 className="w-full h-40"
                 allow="autoplay; encrypted-media"
+                title={`youtube-player-${youtubeId || "custom"}`}
               />
+
               <div className="flex items-center gap-2 p-2">
                 <button
                   onClick={() => ytMsg("playVideo")}
@@ -654,7 +660,94 @@ function FloatingMini({
   );
 }
 
-/* =============== CHAT BOX (avatar + close + Enter clears) =============== */
+/* =============== DRAGGABLE CHAT LAUNCHER (BIG) =============== */
+function DraggableChatLauncher({
+  onOpen,
+  darkMode,
+}: {
+  onOpen: () => void;
+  darkMode: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number }>(() =>
+    safeParse(localStorage.getItem(LS.chatPos), { x: 24, y: 160 })
+  );
+  const drag = useRef({ on: false, dx: 0, dy: 0, pressT: 0 });
+
+  useEffect(() => {
+    localStorage.setItem(LS.chatPos, JSON.stringify(pos));
+  }, [pos]);
+
+  const startDrag = (clientX: number, clientY: number) => {
+    drag.current.on = true;
+    drag.current.dx = clientX - pos.x;
+    drag.current.dy = clientY - pos.y;
+  };
+
+  const pd = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement)?.closest("button")) return;
+    containerRef.current?.setPointerCapture(e.pointerId);
+    drag.current.pressT = performance.now();
+    startDrag(e.clientX, e.clientY);
+  };
+
+  const pm = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!drag.current.on) return;
+    const size = 96;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const nx = Math.max(
+      8,
+      Math.min(vw - size - 8, e.clientX - drag.current.dx)
+    );
+    const ny = Math.max(
+      8,
+      Math.min(vh - size - 8, e.clientY - drag.current.dy)
+    );
+    setPos({ x: nx, y: ny });
+  };
+
+  const pu = (e: React.PointerEvent<HTMLDivElement>) => {
+    const tappedQuickly = performance.now() - drag.current.pressT < 180;
+    if (tappedQuickly && !(e.target as HTMLElement)?.closest("button")) {
+      onOpen();
+    }
+    drag.current.on = false;
+    containerRef.current?.releasePointerCapture(e.pointerId);
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      onPointerDown={pd}
+      onPointerMove={pm}
+      onPointerUp={pu}
+      className="fixed z-[90] select-none"
+      style={{ left: pos.x, top: pos.y }}
+      aria-label="Move chat launcher"
+    >
+      <div className="absolute inset-[-8px] rounded-full" aria-hidden />
+      <button
+        onClick={onOpen}
+        className={[
+          "w-24 h-24 rounded-full grid place-items-center shadow-2xl",
+          "transition-transform hover:scale-105 focus:outline-none focus-visible:ring-4 ring-cyan-300/50",
+          darkMode
+            ? "bg-gradient-to-br from-cyan-500 to-indigo-600 text-white"
+            : "bg-gradient-to-br from-cyan-500 to-blue-600 text-white",
+        ].join(" ")}
+        title="Chat with Dr. Paws"
+        aria-label="Chat with Dr. Paws"
+        style={{ pointerEvents: "auto" }}
+      >
+        <span className="text-4xl">🐱</span>
+        <Cat className="w-6 h-6 absolute bottom-2 right-2 opacity-90" />
+      </button>
+    </div>
+  );
+}
+
+/* =============== CHAT BOX =============== */
 function ChatBox({
   darkMode,
   chat,
@@ -676,12 +769,12 @@ function ChatBox({
     const v = text.trim();
     if (!v) return;
     onSend(v);
-    setText(""); // important: clears after enter
+    setText("");
   };
 
   return (
     <div
-      className={`fixed bottom-6 left-6 w-80 z-50 rounded-3xl border shadow-xl flex flex-col ${
+      className={`fixed bottom-6 left-6 w-80 z-[95] rounded-3xl border shadow-xl flex flex-col ${
         darkMode
           ? "bg-slate-900 border-slate-700 text-white"
           : "bg-white border-slate-300"
@@ -795,7 +888,7 @@ function Modal({
   children: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
       <div
         className={`${
           darkMode ? "bg-slate-900 text-white" : "bg-white text-slate-800"
@@ -1284,6 +1377,9 @@ export default function PomodoroApp() {
   const [isBreak, setIsBreak] = useState<boolean>(false);
   const [isLongBreak, setIsLongBreak] = useState<boolean>(false);
 
+  // prevent pause→reset
+  const [hasStartedSegment, setHasStartedSegment] = useState<boolean>(false);
+
   // sessions
   const [completedPomodoros, setCompletedPomodoros] = useState<number>(0);
   const [sessionHistory, setSessionHistory] = useState<SessionHistory>({});
@@ -1438,13 +1534,20 @@ export default function PomodoroApp() {
     return () => clearInterval(id);
   }, [sessionHistory]);
 
-  /* ===== reset displayed time when idle (don't touch while running) ===== */
+  /* ===== reset time ONLY when segment hasn't started ===== */
   useEffect(() => {
-    if (isActive) return; // why: changing settings shouldn't reset while running
+    if (hasStartedSegment) return;
     const secs =
       (isBreak ? (isLongBreak ? longBreakMin : shortBreakMin) : focusMin) * 60;
     setTimeLeft(secs);
-  }, [focusMin, shortBreakMin, longBreakMin, isBreak, isLongBreak, isActive]);
+  }, [
+    focusMin,
+    shortBreakMin,
+    longBreakMin,
+    isBreak,
+    isLongBreak,
+    hasStartedSegment,
+  ]);
 
   /* ===== streak compute ===== */
   useEffect(() => {
@@ -1549,6 +1652,74 @@ User: "${trimmed}"
     ]);
   };
 
+  /* ========== POMODORO CORE HELPERS (memoized) ========== */
+  const nextBreakIsLong = useCallback(
+    (nextCount: number) =>
+      nextCount > 0 && nextCount % Math.max(2, longBreakInterval) === 0,
+    [longBreakInterval]
+  );
+
+  const incrementTodaySession = useCallback((): number => {
+    const today = dateKey();
+    let nextCount = 0;
+    setSessionHistory((prev) => {
+      nextCount = (prev[today] || 0) + 1;
+      return { ...prev, [today]: nextCount };
+    });
+    setCompletedPomodoros(nextCount);
+    return nextCount;
+  }, [setSessionHistory]);
+
+  const handleTimerComplete = useCallback(() => {
+    setIsActive(false);
+
+    try {
+      const a = new Audio(ALARM_URL);
+      a.volume = 0.5;
+      a.play().catch(() => {});
+    } catch {}
+
+    if (!isBreak) {
+      const nextCount = incrementTodaySession();
+      const longNow = nextBreakIsLong(nextCount);
+
+      setIsBreak(true);
+      setIsLongBreak(longNow);
+      setTimeLeft((longNow ? longBreakMin : shortBreakMin) * 60);
+      setAssistantMessage(
+        `Nice work ${userName || ""}! Your focus is clinically impressive. 💓`
+      );
+
+      if (notificationsEnabledRef.current) {
+        sendNotification(
+          "Focus complete",
+          longNow ? "Long break prescribed. ☕" : "Short break time. 🌿"
+        );
+      }
+      setHasStartedSegment(true);
+      setIsActive(true); // auto-start break
+    } else {
+      setIsBreak(false);
+      setIsLongBreak(false);
+      setTimeLeft(focusMin * 60);
+      setAssistantMessage("Break over — back to focus! 😼");
+
+      if (notificationsEnabledRef.current) {
+        sendNotification("Break complete", "Back to focus mode. 🧠");
+      }
+      setHasStartedSegment(true);
+      setIsActive(true); // auto-start focus
+    }
+  }, [
+    isBreak,
+    longBreakMin,
+    shortBreakMin,
+    focusMin,
+    userName,
+    incrementTodaySession,
+    nextBreakIsLong,
+  ]);
+
   /* ===== timer loop ===== */
   useEffect(() => {
     if (!isActive) {
@@ -1580,70 +1751,16 @@ User: "${trimmed}"
         intervalRef.current = null;
       }
     };
-  }, [isActive]);
+  }, [isActive, handleTimerComplete]);
 
-  const nextBreakIsLong = (nextCount: number) =>
-    nextCount > 0 && nextCount % Math.max(2, longBreakInterval) === 0;
-
-  const incrementTodaySession = (): number => {
-    const today = dateKey();
-    let nextCount = 0;
-    setSessionHistory((prev) => {
-      nextCount = (prev[today] || 0) + 1;
-      return { ...prev, [today]: nextCount };
-    });
-    setCompletedPomodoros(() => nextCount);
-    return nextCount;
-  };
-
-  const handleTimerComplete = () => {
-    setIsActive(false);
-
-    // play alarm (best-effort)
-    try {
-      const a = new Audio(ALARM_URL);
-      a.volume = 0.5;
-      a.play().catch(() => {});
-    } catch {}
-
-    if (!isBreak) {
-      const nextCount = incrementTodaySession();
-      const longNow = nextBreakIsLong(nextCount);
-
-      setIsBreak(true);
-      setIsLongBreak(longNow);
-      setTimeLeft((longNow ? longBreakMin : shortBreakMin) * 60);
-      setAssistantMessage(
-        `Nice work ${userName || ""}! Your focus is clinically impressive. 💓`
-      );
-
-      if (notificationsEnabledRef.current) {
-        sendNotification(
-          "Focus complete",
-          longNow ? "Long break prescribed. ☕" : "Short break time. 🌿"
-        );
-      }
-      // Auto-start break
-      setIsActive(true);
-    } else {
-      setIsBreak(false);
-      setIsLongBreak(false);
-      setTimeLeft(focusMin * 60);
-      setAssistantMessage("Break over — back to focus! 😼");
-      if (notificationsEnabledRef.current) {
-        sendNotification("Break complete", "Back to focus mode. 🧠");
-      }
-      // Auto-start next focus
-      setIsActive(true);
-    }
-  };
-
+  /* ===== controls ===== */
   const handleStart = () => {
     setIsActive(true);
+    setHasStartedSegment(true);
     setAssistantMessage("Focus mode on. I’m watching you shine. 👀");
   };
   const handlePause = () => {
-    setIsActive(false); // why: pause should stop without resetting
+    setIsActive(false); // pause keeps timeLeft
     setAssistantMessage("Paused. Don’t ghost me too long 😿");
   };
   const handleReset = () => {
@@ -1651,6 +1768,7 @@ User: "${trimmed}"
     const secs =
       (isBreak ? (isLongBreak ? longBreakMin : shortBreakMin) : focusMin) * 60;
     setTimeLeft(secs);
+    setHasStartedSegment(false); // allow idle sync while not started
     setAssistantMessage("Reset done. Ready when you are.");
   };
 
@@ -1667,6 +1785,7 @@ User: "${trimmed}"
       const q = FLIRTY_QUOTES[Math.floor(Math.random() * FLIRTY_QUOTES.length)];
       setAssistantMessage(q.replace(/{name}/g, n));
       setTimeLeft(focusMin * 60);
+      setHasStartedSegment(false);
     }
   };
 
@@ -1683,6 +1802,7 @@ User: "${trimmed}"
     setInputName("");
     setInputJob("");
     setIsWelcome(true);
+    setHasStartedSegment(false);
   };
 
   const addTodo = () => {
@@ -1704,10 +1824,6 @@ User: "${trimmed}"
     `${Math.floor(s / 60)
       .toString()
       .padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
-
-  const todayKeyStr = dateKey();
-  const yesterdayKeyStr = prevDateKey(todayKeyStr);
-  const yesterdaySessions = sessionHistory[yesterdayKeyStr] || 0;
 
   const focusPct = useMemo(() => {
     if (dailyGoal <= 0) return 0;
@@ -1825,7 +1941,6 @@ User: "${trimmed}"
             </div>
 
             <div className="flex items-center gap-1">
-              {/* Chat launcher */}
               <IconButton
                 onClick={() => setShowChat((p) => !p)}
                 label="Toggle chat"
@@ -1834,7 +1949,6 @@ User: "${trimmed}"
                 <Cat className="w-5 h-5" />
               </IconButton>
 
-              {/* Floating Mini Toggle */}
               <IconButton
                 onClick={() => setShowFloating((p) => !p)}
                 label="Toggle mini"
@@ -2009,18 +2123,18 @@ User: "${trimmed}"
               {!isActive ? (
                 <button
                   onClick={handleStart}
-                  className="flex items-center gap-3 bg-cyan-600 text-white px-8 py-4 rounded-2xl shadow font-bold text-lg"
+                  className="flex items-center gap-3 bg-gradient-to-r from-cyan-600 to-blue-700 text-white px-9 py-4 rounded-2xl shadow font-bold text-lg hover:shadow-lg hover:translate-y-[1px] active:translate-y-[2px]"
                 >
                   <Play className="w-6 h-6" /> Start
                 </button>
               ) : (
                 <button
                   onClick={handlePause}
-                  className={`flex items-center gap-3 border-2 px-8 py-4 rounded-2xl shadow-sm font-bold text-lg ${
+                  className={`flex items-center gap-3 border-2 px-9 py-4 rounded-2xl shadow-sm font-bold text-lg ${
                     darkMode
                       ? "bg-slate-800 border-slate-700 text-white"
                       : "bg-white border-slate-200 text-slate-700"
-                  }`}
+                  } hover:shadow-lg hover:translate-y-[1px] active:translate-y-[2px]`}
                 >
                   <Pause className="w-6 h-6" /> Pause
                 </button>
@@ -2032,7 +2146,8 @@ User: "${trimmed}"
                   darkMode
                     ? "bg-slate-800 text-slate-200"
                     : "bg-slate-100 text-slate-700"
-                } p-4 rounded-2xl`}
+                } p-4 rounded-2xl hover:shadow`}
+                title="Reset current segment"
               >
                 <RotateCcw className="w-6 h-6" />
               </button>
@@ -2171,67 +2286,21 @@ User: "${trimmed}"
         />
       )}
 
-      {/* Stats Modal */}
-      {showStats && (
-        <Modal
-          onClose={() => setShowStats(false)}
+      {/* Big, draggable chat launcher */}
+      {!showChat && (
+        <DraggableChatLauncher
+          onOpen={() => setShowChat(true)}
           darkMode={darkMode}
-          title="Statistics"
-          icon={<BarChart3 className="w-6 h-6 text-cyan-500" />}
-        >
-          <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
-              <StatCard
-                label="Today Sessions"
-                value={completedPomodoros}
-                color="text-cyan-500"
-                sub={`${completedPomodoros * focusMin} minutes`}
-              />
-              <StatCard
-                label="Yesterday Sessions"
-                value={yesterdaySessions}
-                color="text-indigo-500"
-                sub={`${yesterdaySessions * focusMin} minutes`}
-              />
-            </div>
-            <div className="bg-cyan-500/10 p-4 rounded-2xl flex items-center justify-between">
-              <div>
-                <p className="text-sm opacity-70">Today's Focus</p>
-                <p className="text-3xl font-bold text-cyan-500">
-                  {completedPomodoros * focusMin}m
-                </p>
-              </div>
-              <Clock className="w-8 h-8 text-cyan-500 opacity-50" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <StatCard
-                label="Goal Streak"
-                value={`${streakDays} days`}
-                color="text-orange-500"
-                sub={`Best: ${bestStreak} days`}
-              />
-              <StatCard
-                label="Daily Goal"
-                value={dailyGoal}
-                color="text-purple-500"
-              />
-            </div>
-            <StreakCalendar
-              sessionHistory={sessionHistory}
-              dailyGoal={dailyGoal}
-              darkMode={darkMode}
-            />
-          </div>
-        </Modal>
+        />
       )}
 
-      {/* Settings Modal */}
+      {/* SETTINGS MODAL */}
       {showSettings && (
         <Modal
           onClose={() => setShowSettings(false)}
           darkMode={darkMode}
           title="Settings"
-          icon={<Settings className="w-6 h-6 text-cyan-500" />}
+          icon={<Settings className="w-6 h-6" />}
         >
           <SettingsContent
             focusMin={focusMin}
@@ -2241,9 +2310,20 @@ User: "${trimmed}"
             dailyGoal={dailyGoal}
             darkMode={darkMode}
             notificationsEnabled={notificationsEnabled}
-            setFocusMin={setFocusMin}
-            setShortBreakMin={setShortBreakMin}
-            setLongBreakMin={setLongBreakMin}
+            setFocusMin={(v: number) => {
+              setFocusMin(v);
+              if (!hasStartedSegment && !isBreak) setTimeLeft(v * 60);
+            }}
+            setShortBreakMin={(v: number) => {
+              setShortBreakMin(v);
+              if (!hasStartedSegment && isBreak && !isLongBreak)
+                setTimeLeft(v * 60);
+            }}
+            setLongBreakMin={(v: number) => {
+              setLongBreakMin(v);
+              if (!hasStartedSegment && isBreak && isLongBreak)
+                setTimeLeft(v * 60);
+            }}
             setLongBreakInterval={setLongBreakInterval}
             setDailyGoal={setDailyGoal}
             setDarkMode={setDarkMode}
@@ -2252,16 +2332,121 @@ User: "${trimmed}"
         </Modal>
       )}
 
-      {/* Dr. Paws launcher button */}
-      {!showChat && (
-        <button
-          onClick={() => setShowChat(true)}
-          className="fixed left-6 bottom-24 z-50 w-12 h-12 rounded-full bg-cyan-600 text-white shadow-xl grid place-items-center hover:scale-105 transition"
-          title="Chat with Dr. Paws"
-          aria-label="Chat with Dr. Paws"
+      {/* STATISTICS MODAL */}
+      {showStats && (
+        <Modal
+          onClose={() => setShowStats(false)}
+          darkMode={darkMode}
+          title="Statistics"
+          icon={<BarChart3 className="w-6 h-6" />}
         >
-          <Cat className="w-6 h-6" />
-        </button>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div
+                className={`rounded-2xl p-4 ${
+                  darkMode
+                    ? "bg-slate-800/60 border border-slate-700"
+                    : "bg-white"
+                }`}
+              >
+                <p className="text-xs font-semibold opacity-70">
+                  Today Sessions
+                </p>
+                <div className="mt-1 text-2xl font-extrabold tracking-tight">
+                  <span className="text-cyan-400">
+                    {sessionHistory[dateKey()] || 0}
+                  </span>
+                </div>
+                <p className="text-[11px] opacity-60 mt-1">
+                  {(sessionHistory[dateKey()] || 0) * focusMin} minutes
+                </p>
+              </div>
+              <div
+                className={`rounded-2xl p-4 ${
+                  darkMode
+                    ? "bg-slate-800/60 border border-slate-700"
+                    : "bg-white"
+                }`}
+              >
+                <p className="text-xs font-semibold opacity-70">
+                  Yesterday Sessions
+                </p>
+                <div className="mt-1 text-2xl font-extrabold tracking-tight">
+                  <span className="text-indigo-400">
+                    {sessionHistory[prevDateKey(dateKey())] || 0}
+                  </span>
+                </div>
+                <p className="text-[11px] opacity-60 mt-1">
+                  {(sessionHistory[prevDateKey(dateKey())] || 0) * focusMin}{" "}
+                  minutes
+                </p>
+              </div>
+            </div>
+
+            <div
+              className={`rounded-2xl p-4 flex items-center justify-between border ${
+                darkMode ? "bg-slate-800/60 border-slate-700" : "bg-white"
+              }`}
+            >
+              <div>
+                <p className="text-xs font-semibold opacity-70">
+                  Today&apos;s Focus
+                </p>
+                <p className="text-2xl font-extrabold mt-1">
+                  {(sessionHistory[dateKey()] || 0) * focusMin}m
+                </p>
+              </div>
+              <Clock
+                className={darkMode ? "text-slate-400" : "text-slate-500"}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div
+                className={`rounded-2xl p-4 ${
+                  darkMode
+                    ? "bg-slate-800/60 border border-slate-700"
+                    : "bg-white"
+                }`}
+              >
+                <p className="text-xs font-semibold opacity-70">Goal Streak</p>
+                <div className="mt-1 text-2xl font-extrabold tracking-tight">
+                  <span className="text-orange-400">{streakDays} days</span>
+                </div>
+                <p className="text-[11px] opacity-60 mt-1">
+                  Best: {bestStreak} days
+                </p>
+              </div>
+              <div
+                className={`rounded-2xl p-4 ${
+                  darkMode
+                    ? "bg-slate-800/60 border border-slate-700"
+                    : "bg-white"
+                }`}
+              >
+                <p className="text-xs font-semibold opacity-70">Daily Goal</p>
+                <div className="mt-1 text-2xl font-extrabold tracking-tight">
+                  <span className="text-purple-400">{dailyGoal}</span>
+                </div>
+              </div>
+            </div>
+
+            <div
+              className={`rounded-2xl p-4 border ${
+                darkMode ? "bg-slate-800/60 border-slate-700" : "bg-white"
+              }`}
+            >
+              <p className="text-[11px] font-bold tracking-widest opacity-60 uppercase mb-2">
+                Streak Calendar
+              </p>
+              <StreakCalendar
+                sessionHistory={sessionHistory}
+                dailyGoal={dailyGoal}
+                darkMode={darkMode}
+              />
+            </div>
+          </div>
+        </Modal>
       )}
 
       <AppStyles />
